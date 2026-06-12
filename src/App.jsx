@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // ║  SUPABASE-ZUGANGSDATEN — HIER DEINE WERTE EINTRAGEN                        ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 const SUPABASE_URL = "https://lcyszggbgzqdrchavbpy.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxjeXN6Z2diZ3pxZHJjaGF2YnB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyMTg5OTcsImV4cCI6MjA5Njc5NDk5N30.U_wEj44tdbLvzzeQMo990CrVL8cqFEhj0wJEnpfxcdw";
+const SUPABASE_ANON_KEY = "DEIN_ANON_KEY_HIER_EINFUEGEN";
 // ────────────────────────────────────────────────────────────────────────────
 
 // Supabase-Client dynamisch laden (kein npm-Install nötig)
@@ -33,6 +33,7 @@ function belegToDb(b) {
     bereich: b.bereich || "unbekannt",
     bereich_begruendung: b.bereichBegruendung || "",
     image_url: b.imageUrl || null,
+    ist_pdf: b.istPdf || false,
   };
 }
 function belegFromDb(r) {
@@ -44,6 +45,7 @@ function belegFromDb(r) {
     bereichBegruendung: r.bereich_begruendung || "",
     imageUrl: r.image_url || null,
     image: r.image_url || null, // für Anzeige
+    istPdf: r.ist_pdf || false,
   };
 }
 
@@ -67,18 +69,20 @@ async function dbLoescheBeleg(id) {
 }
 
 // Foto in Supabase Storage hochladen → gibt öffentliche URL zurück
-async function dbUploadFoto(typ, datum, beschreibung, dataUrl) {
+async function dbUploadDatei(typ, datum, beschreibung, dataUrl, istPdf) {
   const sb = await getSupabase();
   const jahr = (datum || "").slice(0, 4) || "" + new Date().getFullYear();
   const safeName = (beschreibung || "beleg").replace(/[^a-zA-Z0-9]/g, "_").slice(0, 40);
-  const path = `${typ}/${jahr}/${datum}_${safeName}_${Date.now()}.jpg`;
+  const ext = istPdf ? "pdf" : "jpg";
+  const mime = istPdf ? "application/pdf" : "image/jpeg";
+  const path = `${typ}/${jahr}/${datum}_${safeName}_${Date.now()}.${ext}`;
   // dataUrl → Blob
   const base64 = dataUrl.split(",")[1];
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const blob = new Blob([bytes], { type: "image/jpeg" });
-  const { error } = await sb.storage.from("belege").upload(path, blob, { contentType: "image/jpeg", upsert: false });
+  const blob = new Blob([bytes], { type: mime });
+  const { error } = await sb.storage.from("belege").upload(path, blob, { contentType: mime, upsert: false });
   if (error) throw error;
   const { data } = sb.storage.from("belege").getPublicUrl(path);
   return data.publicUrl;
@@ -177,12 +181,12 @@ function PdfButton({ onFile, label = "📄 PDF hochladen" }) {
 }
 
 // ── Beleg-Formular ────────────────────────────────────────────────────────────
-function BelegForm({ typ, prefill, image, onSave, onCancel }) {
+function BelegForm({ typ, prefill, image, pdfFile, onSave, onCancel }) {
   const [form, setForm] = useState({
     datum: prefill?.datum || today(),
     betrag: prefill?.betrag || "",
     art: prefill?.art || "ausgabe",
-    beschreibung: prefill?.beschreibung || "",
+    beschreibung: prefill?.beschreibung || (pdfFile?.name ? pdfFile.name.replace(/\.pdf$/i, "") : ""),
     kategorie: prefill?.kategorie || "",
     bereich: prefill?.bereich || "unbekannt",
   });
@@ -215,7 +219,7 @@ function BelegForm({ typ, prefill, image, onSave, onCancel }) {
       <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
         <button style={{ ...s.btn, ...s.btnSuccess }} onClick={() => {
           if (!form.betrag || parseFloat(form.betrag) <= 0) { alert("Bitte Betrag eingeben."); return; }
-          onSave({ ...form, betrag: parseFloat(form.betrag).toFixed(2), image: image || null });
+          onSave({ ...form, betrag: parseFloat(form.betrag).toFixed(2), image: image || null, pdfDataUrl: pdfFile?.dataUrl || null, pdfName: pdfFile?.name || null });
         }}>✓ Beleg speichern</button>
         <button style={s.btn} onClick={onCancel}>Abbrechen</button>
       </div>
@@ -353,23 +357,28 @@ function ScanEditor({ imageUrl, onConfirm, onCancel }) {
 
 // ── Erfassen-Karte ────────────────────────────────────────────────────────────
 function ErfassenKarte({ typ, onSaved }) {
-  const [mode, setMode] = useState("idle"); // idle | scan | manual | ocr-loading | ocr-done
-  const [rawImage, setRawImage] = useState(null); // Originalfoto vor Bearbeitung
-  const [image, setImage] = useState(null);       // bearbeitetes Bild
+  const [mode, setMode] = useState("idle"); // idle | choose | scan | pdf-ready | manual | ocr-loading | ocr-done
+  const [rawImage, setRawImage] = useState(null);
+  const [image, setImage] = useState(null);
+  const [pdfFile, setPdfFile] = useState(null);   // { dataUrl, name }
   const [ocrData, setOcrData] = useState(null);
   const [ocrError, setOcrError] = useState(false);
 
   // Foto gewählt → in den Scan-Editor
-  const handleFile = useCallback((file) => {
+  const handleFotoFile = useCallback((file) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      setRawImage(e.target.result);
-      setMode("scan");
-    };
+    reader.onload = (e) => { setRawImage(e.target.result); setMode("scan"); };
     reader.readAsDataURL(file);
   }, []);
 
-  // Nach dem Zuschneiden → KI-Analyse
+  // PDF gewählt → direkt zum Formular (PDF kann nicht gescannt werden)
+  const handlePdfFile = useCallback((file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => { setPdfFile({ dataUrl: e.target.result, name: file.name }); setMode("pdf-ready"); };
+    reader.readAsDataURL(file);
+  }, []);
+
+  // Nach dem Zuschneiden → KI-Analyse (versucht; fällt bei Fehler auf manuell zurück)
   const runOcr = useCallback(async (dataUrl) => {
     setImage(dataUrl);
     setMode("ocr-loading");
@@ -396,29 +405,66 @@ function ErfassenKarte({ typ, onSaved }) {
     setMode("ocr-done");
   }, []);
 
-  const reset = () => { setMode("idle"); setRawImage(null); setImage(null); setOcrData(null); setOcrError(false); };
+  const reset = () => { setMode("idle"); setRawImage(null); setImage(null); setPdfFile(null); setOcrData(null); setOcrError(false); };
   const handleSave = (formData) => { onSaved({ ...formData, typ, id: Date.now().toString(), createdAt: new Date().toISOString() }); reset(); };
 
   return (
     <div style={s.card}>
       <div style={s.sectionTitle}>{typ === "bank" ? "🏦 Bank" : "💵 Kasse"} — Beleg erfassen</div>
+
       {mode === "idle" && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <FotoButton onFile={handleFile} />
+          <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setMode("choose")}>📎 Dokument hochladen</button>
           <button style={s.btn} onClick={() => setMode("manual")}>+ Manuell erfassen</button>
         </div>
       )}
+
+      {mode === "choose" && (
+        <div>
+          <div style={{ fontSize: 13, color: "#666", marginBottom: 12 }}>Was möchtest du hochladen?</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", display: "inline-block" }}>
+              <div style={{ ...s.btn, ...s.btnPrimary, pointerEvents: "none" }}>📷 Foto</div>
+              <input type="file" accept="image/*"
+                onChange={(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) handleFotoFile(f); }}
+                style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", fontSize: 0 }} />
+            </div>
+            <div style={{ position: "relative", display: "inline-block" }}>
+              <div style={{ ...s.btn, ...s.btnWarning, pointerEvents: "none" }}>📄 PDF</div>
+              <input type="file" accept="application/pdf"
+                onChange={(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) handlePdfFile(f); }}
+                style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", fontSize: 0 }} />
+            </div>
+            <button style={s.btn} onClick={reset}>Abbrechen</button>
+          </div>
+        </div>
+      )}
+
       {mode === "scan" && rawImage && (
         <ScanEditor imageUrl={rawImage} onConfirm={runOcr} onCancel={reset} />
       )}
+
+      {mode === "pdf-ready" && pdfFile && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: "#faeeda", border: "1px solid #fac775", borderRadius: 10, marginBottom: 12 }}>
+            <span style={{ fontSize: 22 }}>📄</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>{pdfFile.name}</div>
+              <div style={{ fontSize: 12, color: "#666" }}>PDF bereit — bitte Daten unten eintragen</div>
+            </div>
+          </div>
+          <BelegForm typ={typ} pdfFile={pdfFile} onSave={handleSave} onCancel={reset} />
+        </>
+      )}
+
       {mode === "manual" && <BelegForm typ={typ} onSave={handleSave} onCancel={reset} />}
+
       {(mode === "ocr-loading" || mode === "ocr-done") && (
         <>
           {image && <div style={{ textAlign: "center", marginBottom: 12 }}><img src={image} style={{ maxWidth: "100%", maxHeight: 160, borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)" }} /></div>}
           {mode === "ocr-loading" && (
             <div style={{ background: "#faeeda", border: "1px solid #fac775", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
-              <div style={{ fontWeight: 500, fontSize: 12, color: "#854f0b" }}>⏳ KI liest Beleg aus…</div>
-              <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>Betrag, Datum, Zweck und steuerliche Einordnung werden erkannt</div>
+              <div style={{ fontWeight: 500, fontSize: 12, color: "#854f0b" }}>⏳ Beleg wird verarbeitet…</div>
             </div>
           )}
           {mode === "ocr-done" && ocrData && (
@@ -438,7 +484,7 @@ function ErfassenKarte({ typ, onSaved }) {
           )}
           {mode === "ocr-done" && ocrError && (
             <>
-              <div style={{ background: "#fcebeb", border: "1px solid #f7c1c1", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13, color: "#a32d2d" }}>Beleg konnte nicht automatisch ausgelesen werden — bitte manuell eingeben.</div>
+              <div style={{ background: "#e6f1fb", border: "1px solid #b5d4f4", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13, color: "#185fa5" }}>Bitte die Belegdaten unten eintragen. Das Foto wird mitgespeichert.</div>
               <BelegForm typ={typ} image={image} onSave={handleSave} onCancel={reset} />
             </>
           )}
@@ -475,7 +521,20 @@ function BelegDetail({ beleg, onUpdate, onDelete, onShowImg }) {
         </select>
       </div>
       {beleg.bereichBegruendung && <div style={{ fontSize: 12, color: "#666", background: "#f7f5f0", borderRadius: 7, padding: "7px 10px", marginBottom: 8 }}>🤖 KI-Begründung: {beleg.bereichBegruendung}</div>}
-      {beleg.image && <div style={{ marginBottom: 10 }}><img src={beleg.image} style={{ maxWidth: 180, borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", cursor: "pointer" }} onClick={() => onShowImg(beleg.image)} /><div style={{ fontSize: 11, color: "#aaa", marginTop: 3 }}>Klicken zum Vergrößern</div></div>}
+      {beleg.image && beleg.istPdf && (
+        <div style={{ marginBottom: 10 }}>
+          <a href={beleg.image} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "#faeeda", border: "1px solid #fac775", borderRadius: 8, textDecoration: "none", color: "#854f0b", fontSize: 13, fontWeight: 500 }}>
+            📄 PDF öffnen
+          </a>
+          <div style={{ fontSize: 11, color: "#aaa", marginTop: 3 }}>Öffnet das Dokument in einem neuen Tab</div>
+        </div>
+      )}
+      {beleg.image && !beleg.istPdf && (
+        <div style={{ marginBottom: 10 }}>
+          <img src={beleg.image} style={{ maxWidth: 180, borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", cursor: "pointer" }} onClick={() => onShowImg(beleg.image)} />
+          <div style={{ fontSize: 11, color: "#aaa", marginTop: 3 }}>Klicken zum Vergrößern</div>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 7 }}>
         <button style={{ ...s.btn, ...s.btnSuccess, ...s.btnSm }} onClick={() => onUpdate(form)}>✓ Speichern</button>
         <button style={{ ...s.btn, ...s.btnDanger, ...s.btnSm }} onClick={onDelete}>🗑 Löschen</button>
@@ -989,12 +1048,8 @@ function Login({ onLoggedIn }) {
             {status === "loading" ? "⏳ Bitte warten…" : modus === "login" ? "🔑 Anmelden" : "✓ Konto erstellen"}
           </button>
 
-          <div style={{ textAlign: "center", fontSize: 13, color: "#666", marginTop: 6 }}>
-            {modus === "login" ? (
-              <>Noch kein Konto? <span style={{ color: "#185fa5", cursor: "pointer", fontWeight: 500 }} onClick={() => { setModus("register"); setFehler(""); setInfo(""); }}>Registrieren</span></>
-            ) : (
-              <>Schon ein Konto? <span style={{ color: "#185fa5", cursor: "pointer", fontWeight: 500 }} onClick={() => { setModus("login"); setFehler(""); setInfo(""); }}>Anmelden</span></>
-            )}
+          <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6 }}>
+            Zugang nur für berechtigte Vereinsmitglieder. Bei Problemen wende dich an den Kassenwart.
           </div>
         </div>
       </div>
@@ -1037,10 +1092,16 @@ export default function App() {
     setSyncError("");
     try {
       let imageUrl = null;
-      if (b.image && b.image.startsWith("data:")) {
-        imageUrl = await dbUploadFoto(b.typ, b.datum, b.beschreibung, b.image);
+      let istPdf = false;
+      if (b.pdfDataUrl && b.pdfDataUrl.startsWith("data:")) {
+        // PDF hochladen
+        imageUrl = await dbUploadDatei(b.typ, b.datum, b.beschreibung, b.pdfDataUrl, true);
+        istPdf = true;
+      } else if (b.image && b.image.startsWith("data:")) {
+        // Foto hochladen
+        imageUrl = await dbUploadDatei(b.typ, b.datum, b.beschreibung, b.image, false);
       }
-      const belegMitUrl = { ...b, imageUrl, image: imageUrl };
+      const belegMitUrl = { ...b, imageUrl, image: imageUrl, istPdf };
       await dbSpeichereBeleg(belegMitUrl);
       setBelege(prev => [...prev, belegMitUrl]);
     } catch (e) {
