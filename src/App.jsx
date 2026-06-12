@@ -62,8 +62,25 @@ async function dbSpeichereBeleg(b) {
   if (error) throw error;
 }
 
-async function dbLoescheBeleg(id) {
+async function dbLoescheBeleg(id, imageUrl) {
   const sb = await getSupabase();
+  // Zuerst die Datei aus dem Storage entfernen (falls vorhanden)
+  if (imageUrl) {
+    try {
+      // Internen Pfad aus der öffentlichen URL extrahieren
+      // URL-Form: .../storage/v1/object/public/belege/<PFAD>
+      const marker = "/storage/v1/object/public/belege/";
+      const idx = imageUrl.indexOf(marker);
+      if (idx !== -1) {
+        const pfad = decodeURIComponent(imageUrl.substring(idx + marker.length));
+        await sb.storage.from("belege").remove([pfad]);
+      }
+    } catch (e) {
+      console.warn("Storage-Datei konnte nicht gelöscht werden:", e);
+      // Trotzdem weitermachen und den DB-Eintrag löschen
+    }
+  }
+  // Dann den Datenbank-Eintrag löschen
   const { error } = await sb.from("belege").delete().eq("id", id);
   if (error) throw error;
 }
@@ -1123,7 +1140,8 @@ export default function App() {
   const deleteBeleg = async (id) => {
     setSyncError("");
     try {
-      await dbLoescheBeleg(id);
+      const beleg = belege.find(b => b.id === id);
+      await dbLoescheBeleg(id, beleg?.imageUrl || beleg?.image || null);
       setBelege(prev => prev.filter(b => b.id !== id));
     } catch (e) {
       setSyncError("Beleg konnte nicht gelöscht werden: " + (e.message || ""));
