@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // ║  SUPABASE-ZUGANGSDATEN — HIER DEINE WERTE EINTRAGEN                        ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 const SUPABASE_URL = "https://lcyszggbgzqdrchavbpy.supabase.co";
-const SUPABASE_ANON_KEY = "DEIN_ANON_KEY_HIER_EINFUEGEN";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxjeXN6Z2diZ3pxZHJjaGF2YnB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyMTg5OTcsImV4cCI6MjA5Njc5NDk5N30.U_wEj44tdbLvzzeQMo990CrVL8cqFEhj0wJEnpfxcdw";
 // ────────────────────────────────────────────────────────────────────────────
 
 // Supabase-Client dynamisch laden (kein npm-Install nötig)
